@@ -1,0 +1,11 @@
+.DS_Store
+.local/
+build/
+dist/
+*.aep
+*.aepx
+docs/adobe-terms.png
+__pycache__/
+ae-mcp/
+DEV_STATE.md
+docs/ae-chinese-ui.png

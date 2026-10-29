@@ -1,0 +1,8 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {"label": "Pattern: test core", "type": "process", "command": "python3", "args": ["scripts/build.py", "--test"], "group": "test", "problemMatcher": "$gcc"},
+    {"label": "Pattern: build plugin", "type": "process", "command": "python3", "args": ["scripts/build.py"], "group": {"kind": "build", "isDefault": true}, "problemMatcher": "$gcc"},
+    {"label": "Pattern: install plugin", "type": "process", "command": "python3", "args": ["scripts/build.py", "--install"], "problemMatcher": "$gcc"}
+  ]
+}

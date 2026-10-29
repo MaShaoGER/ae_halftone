@@ -1,0 +1,15 @@
+{
+  "version": "1.1.0",
+  "name": "有序图案",
+  "installedMatchesRelease": true,
+  "archiveValid": true,
+  "outputFlags2": 134217856,
+  "rgbaFloatScratch4kMiB": 3.75,
+  "serial16Ms": 6273,
+  "mfr16Ms": 4628,
+  "serial8Ms": 4106,
+  "mfr8Ms": 2658,
+  "framesComparedPerDepth": 24,
+  "mismatchedFrames": 0,
+  "distinctFramesInFlight": 6
+}
