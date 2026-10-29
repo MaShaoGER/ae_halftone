@@ -4,6 +4,7 @@
 #include "AE_EffectCB.h"
 #include "Param_Utils.h"
 #include "PatternCore.h"
+#include "RasterCore.h"
 #include "PluginConfig.h"
 #include "RenderTrace.h"
 #include <algorithm>
@@ -16,8 +17,9 @@
 #include <vector>
 
 namespace {
-enum { INPUT, SHAPE, CUSTOM_LAYER, MAP_LAYER, DENSE, SPARSE, ROW, SIZE, START, END, ANGLE, ROTATION, OFFSET_X, OFFSET_Y, STAGGER, COLOR, OPACITY, COUNT };
-static_assert(PATTERN_VERSION == PF_VERSION(1,1,0,PF_Stage_DEVELOP,0));
+// Shared parameter definitions for the Mac and future Windows host adapters.
+enum { INPUT, SHAPE, CUSTOM_LAYER, MAP_LAYER, DENSE, SPARSE, ROW, SIZE, START, END, ANGLE, ROTATION, OFFSET_X, OFFSET_Y, STAGGER, COLOR, OPACITY, GRADIENT_STRENGTH, COUNT };
+static_assert(PATTERN_VERSION == PF_VERSION(2,0,0,PF_Stage_DEVELOP,0));
 static_assert(PATTERN_OUT_FLAGS == PF_OutFlag_DEEP_COLOR_AWARE);
 static_assert(PATTERN_OUT_FLAGS2 == (PF_OutFlag2_REVEALS_ZERO_ALPHA | PF_OutFlag2_SUPPORTS_THREADED_RENDERING));
 
@@ -36,6 +38,7 @@ PF_Err setup(PF_InData* in_data, PF_OutData* out_data) {
     SLIDER("交错程度 (%)",0,100,0,STAGGER);
     CLEAR(); PF_ADD_COLOR("图形颜色",255,255,255,COLOR);
     SLIDER("不透明度 (%)",0,100,100,OPACITY);
+    SLIDER("渐变读取强度 (%)",0,100,100,GRADIENT_STRENGTH);
     out_data->num_params=COUNT;
     return err;
 #undef SLIDER
@@ -75,6 +78,7 @@ PF_Err render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
     auto val=[&](int i){return float(params[i]->u.fs_d.value);};
     s.spacingDense=val(DENSE); s.spacingSparse=val(SPARSE); s.rowSpacing=val(ROW); s.size=val(SIZE);
     s.gradientStart=val(START)/100; s.gradientEnd=val(END)/100; s.angle=val(ANGLE); s.shapeRotation=val(ROTATION);
+    s.gradientStrength=val(GRADIENT_STRENGTH)/100;
     s.offsetX=val(OFFSET_X); s.offsetY=val(OFFSET_Y); s.stagger=val(STAGGER)/100;
     auto c=params[COLOR]->u.cd.value; s.fillColor={c.red/255.f,c.green/255.f,c.blue/255.f,val(OPACITY)/100};
     PixelSource customSource, mapSource;
@@ -82,30 +86,44 @@ PF_Err render(PF_InData* in_data, PF_ParamDef* params[], PF_LayerDef* output) {
         if((err=custom.get(CUSTOM_LAYER))) return err;
         if((err=readLayer(in_data,custom.value.u.ld,customSource,s.customStamp))) return err;
     }
-    if((err=map.get(MAP_LAYER))) return err;
-    if((err=readLayer(in_data,map.value.u.ld,mapSource,s.gradientMap))) return err;
+    if(s.gradientStrength!=0) {
+        if((err=map.get(MAP_LAYER))) return err;
+        if((err=readLayer(in_data,map.value.u.ld,mapSource,s.gradientMap))) return err;
+    }
     if(output->width<=0 || output->height<=0) return PF_Err_NONE;
     const float sx=float(in_data->downsample_x.num)/in_data->downsample_x.den, sy=float(in_data->downsample_y.num)/in_data->downsample_y.den;
-    constexpr int bandRows=64;
-    std::vector<float> image(size_t(output->width)*std::min<int>(bandRows,output->height)*4);
-    const auto plan=pattern::makePlan(s);
     pattern::RenderControl control{in_data, [](void* user) { auto* in_data=static_cast<PF_InData*>(user); PF_Err error=PF_ABORT(in_data); if(error) throw error; }};
+    const auto frame=pattern::prepareRaster(s,output->width,output->height,sx,sy,control);
     PF_Pixel16* deep=nullptr; PF_Pixel8* shallow=nullptr;
     if(PF_WORLD_IS_DEEP(output)) { if((err=PF_GET_PIXEL_DATA16(output,nullptr,&deep))) return err; if(!deep) return PF_Err_INTERNAL_STRUCT_DAMAGED; }
     else { if((err=PF_GET_PIXEL_DATA8(output,nullptr,&shallow))) return err; if(!shallow) return PF_Err_INTERNAL_STRUCT_DAMAGED; }
+    // Prefer the tested Metal path. CPU fallback uses the same ordered tile index and cropped material.
+    pattern::GPUStats gpuStats;
+    if(pattern::renderRasterGPUBytes(frame,deep?static_cast<void*>(deep):static_cast<void*>(shallow),output->rowbytes,
+        deep?pattern::RasterOutput::ARGB16:pattern::RasterOutput::ARGB8,control,&gpuStats)) {
+        trace.recordGPU(gpuStats.milliseconds);
+        return PF_Err_NONE;
+    }
+    constexpr int bandRows=64;
+    std::vector<float> image(size_t(output->width)*std::min<int>(bandRows,output->height)*4);
     for(int y=0;y<output->height;y+=bandRows) {
         const int height=std::min<int>(bandRows,output->height-y);
-        pattern::renderBand(plan,image.data(),output->width,height,output->width*4,sx,sy,y,control);
+        pattern::renderRasterCPU(frame,image.data(),output->width*4,y,height,control);
         if(deep) copyOut(deep,output,PF_MAX_CHAN16,image,y,height);
         else copyOut(shallow,output,PF_MAX_CHAN8,image,y,height);
     }
     return PF_Err_NONE;
 }
 }
-extern "C" __attribute__((visibility("default"))) PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output, void*) {
+#ifdef _WIN32
+#define PATTERN_EXPORT __declspec(dllexport)
+#else
+#define PATTERN_EXPORT __attribute__((visibility("default")))
+#endif
+extern "C" PATTERN_EXPORT PF_Err EffectMain(PF_Cmd cmd, PF_InData* in_data, PF_OutData* out_data, PF_ParamDef* params[], PF_LayerDef* output, void*) {
     try {
         switch(cmd) {
-        case PF_Cmd_ABOUT: std::snprintf(out_data->return_msg,sizeof(out_data->return_msg),"有序图案 1.1\r自定义图形与渐变间距生成器，支持多帧渲染。"); break;
+        case PF_Cmd_ABOUT: std::snprintf(out_data->return_msg,sizeof(out_data->return_msg),"有序图案 2.0 开发版\r分块有序合成、素材裁剪与 Metal 计算加速；8/16 bpc。"); break;
         case PF_Cmd_GLOBAL_SETUP: out_data->my_version=PATTERN_VERSION; out_data->out_flags=PATTERN_OUT_FLAGS; out_data->out_flags2=PATTERN_OUT_FLAGS2; break;
         case PF_Cmd_PARAMS_SETUP: return setup(in_data,out_data);
         case PF_Cmd_RENDER: return render(in_data,params,output);

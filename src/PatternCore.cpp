@@ -33,11 +33,14 @@ std::vector<Stamp> layout(const Settings& s) {
     const float radius = std::hypot(float(s.width), float(s.height)) * .5f;
     const float cx = s.width*.5f + safe(s.offsetX,0), cy = s.height*.5f + safe(s.offsetY,0);
     const float start = safe(s.gradientStart,0), end = safe(s.gradientEnd,1);
-    auto spacing = [&](float x) {
+    const float strength=clamp01(safe(s.gradientStrength,1));
+    const bool hasMap=strength>0 && valid(s.gradientMap);
+    auto spacing = [&](float x, float y) {
+        if(strength==0) return dense;
         float t = (x + radius) / (2 * radius);
-        if (valid(s.gradientMap)) { auto c = sample(s.gradientMap, clamp01((cx + ca*x)/s.width), clamp01((cy + sa*x)/s.height)); t = c.a > 1e-6f ? clamp01((.2126f*c.r+.7152f*c.g+.0722f*c.b)/c.a) : 0; }
+        if (hasMap) { auto c = sample(s.gradientMap, clamp01((cx + ca*x-sa*y)/s.width), clamp01((cy + sa*x+ca*y)/s.height)); t = c.a > 1e-6f ? clamp01((.2126f*c.r+.7152f*c.g+.0722f*c.b)/c.a) : 0; }
         else t = std::abs(end-start) < 1e-6f ? (t >= end ? 1.f : 0.f) : clamp01((t-start)/(end-start));
-        return dense+(sparse-dense)*t;
+        return dense+(sparse-dense)*(t*strength);
     };
     // Transform the canvas into lattice coordinates and pad for rotated stamps.
     float minU=INFINITY,maxU=-INFINITY,minV=INFINITY,maxV=-INFINITY;
@@ -53,25 +56,32 @@ std::vector<Stamp> layout(const Settings& s) {
     if (!std::isfinite(firstRow) || !std::isfinite(lastRow) || firstRow < -maxSteps || lastRow > maxSteps ||
         (lastRow-firstRow+1)*(std::ceil((maxU-minU)/std::min(dense,sparse))+2)>maxStamps)
         throw std::length_error("pattern lattice exceeds candidate limit");
-    std::vector<float> columns[2];
-    for(int parity=0; parity<2; ++parity) {
-        float anchor=-radius+(parity ? std::clamp(safe(s.stagger,0),-1.f,1.f)*spacing(-radius) : 0.f);
+    auto makeColumns = [&](float y, int parity) {
+        std::vector<float> columns;
+        float anchor=-radius+(parity ? std::clamp(safe(s.stagger,0),-1.f,1.f)*spacing(-radius,y) : 0.f);
         int steps=0;
-        for(float x=anchor; x<=maxU; x+=spacing(x)) {
+        for(float x=anchor; x<=maxU; x+=spacing(x,y)) {
             if(++steps>maxSteps) throw std::length_error("pattern lattice exceeds step limit");
-            if(x>=minU) columns[parity].push_back(x);
+            if(x>=minU) columns.push_back(x);
         }
         std::vector<float> backwards;
-        for(float x=anchor-spacing(anchor); x>=minU; x-=spacing(x)) {
+        for(float x=anchor-spacing(anchor,y); x>=minU; x-=spacing(x,y)) {
             if(++steps>maxSteps) throw std::length_error("pattern lattice exceeds step limit");
             if(x<=maxU) backwards.push_back(x);
         }
         std::reverse(backwards.begin(),backwards.end());
-        columns[parity].insert(columns[parity].begin(),backwards.begin(),backwards.end());
-    }
+        columns.insert(columns.begin(),backwards.begin(),backwards.end());
+        return columns;
+    };
+    // Built-in linear gradients share columns. Image maps need a separate
+    // profile per row so radial/vertical gradients retain both dimensions.
+    std::vector<float> columns[2];
+    if(!hasMap) for(int parity=0; parity<2; ++parity) columns[parity]=makeColumns(0,parity);
     for(int row=int(firstRow); row<=int(lastRow); ++row) {
         float y=-radius+row*rowSpacing;
-        for(float x : columns[(row%2+2)%2]) {
+        const int parity=(row%2+2)%2;
+        if(hasMap) columns[parity]=makeColumns(y,parity);
+        for(float x : columns[parity]) {
             float px=cx+ca*x-sa*y, py=cy+sa*x+ca*y;
             if(px>=-pad && px<=s.width+pad && py>=-pad && py<=s.height+pad) result.push_back({px,py,size});
         }

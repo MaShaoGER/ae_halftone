@@ -9,6 +9,7 @@ struct Settings {
     int width = 1920, height = 1080; // Full-resolution layer coordinates.
     float spacingDense = 20, spacingSparse = 60, rowSpacing = 40;
     float gradientStart = 0, gradientEnd = 1; // Normalized position along the rotated pattern's horizontal axis.
+    float gradientStrength = 1; // 0 = uniform spacingDense, 1 = full gradient influence.
     float angle = 0, offsetX = 0, offsetY = 0, stagger = 0; // Degrees, full-resolution pixels, and row fraction.
     float size = 10, shapeRotation = 0; // Full-resolution diameter and degrees.
     Shape shape = Shape::Circle;
@@ -18,8 +19,10 @@ struct Settings {
 struct Stamp { float x, y, size; };
 struct RenderControl { void* user = nullptr; void (*checkCancel)(void*) = nullptr; };
 struct RenderPlan { Settings settings; std::vector<Stamp> stamps; };
-// Gradient-map luminance is sampled on the rotated pattern centerline for each
-// column; this preserves aligned rows. Dark maps to dense, light to sparse.
+// Gradient-map luminance is sampled at each position in output-layer space.
+// Each row varies its horizontal spacing independently; row spacing and stamp
+// size stay fixed. Dark maps to spacingDense, light to spacingSparse at full
+// gradientStrength. At zero strength, all spacing is spacingDense.
 // Backward extension of variable-spacing columns uses backward Euler steps;
 // it is not the exact inverse of forward stepping. Throws std::length_error
 // if candidate or stepping limits are exceeded.
